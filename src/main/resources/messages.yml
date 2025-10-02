@@ -16,3 +16,6 @@ gui-lore:
   - "&8Name: &f{name}"
   - "&8Source: &fItemDB"
 gui-empty: "{prefix}&7No items have been saved yet. Use &e/db add <name>&7 to store one."
+gui-back: "&aBack"
+gui-next: "&aNext"
+gui-close: "&cClose"
