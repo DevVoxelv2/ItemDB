@@ -4,7 +4,7 @@
   <groupId>net.devvoxel</groupId>
   <artifactId>ItemDB</artifactId>
   <name>ItemDB</name>
-  <version>1.0.0-SNAPSHOT</version>
+  <version>1.0.1-SNAPSHOT</version>
   <build>
     <defaultGoal>clean package</defaultGoal>
     <resources>
