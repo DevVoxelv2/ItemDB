@@ -20,7 +20,7 @@ public class ItemDB extends JavaPlugin {
     private ItemManager itemManager;
     private MessageManager messageManager;
     private ItemsGui itemsGui;
-    private BukkitTask reloadTask;
+    private BukkitTask syncTask;
 
     public static ItemDB get() {
         return instance;
@@ -62,12 +62,8 @@ public class ItemDB extends JavaPlugin {
                     getConfig().getString("Database.Type", "mysql").toLowerCase())
             );
 
-            this.reloadTask = Bukkit.getScheduler().runTaskTimerAsynchronously(
-                    this,
-                    () -> itemManager.load(false),
-                    20L,
-                    20L
-            );
+            long interval = Math.max(20L, getConfig().getLong("Database.SyncIntervalTicks", 100L));
+            this.syncTask = itemManager.applySyncTask(interval);
 
             getLogger().info("ItemDB erfolgreich aktiviert.");
             getLogger().info("Geladene Items aus Datenbank: " + itemManager.size());
@@ -79,9 +75,9 @@ public class ItemDB extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (reloadTask != null) {
-            reloadTask.cancel();
-            reloadTask = null;
+        if (syncTask != null) {
+            syncTask.cancel();
+            syncTask = null;
         }
         if (database != null) {
             database.close();

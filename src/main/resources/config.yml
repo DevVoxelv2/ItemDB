@@ -8,8 +8,12 @@ Database:
   User: "root"
   Password: "password"
   Table: "itemdb_items"
+  SyncIntervalTicks: 100
 
 Gui:
   Title: "§cItemDB §7» §fItems"
   Rows: 6
   BorderGlassData: 7
+
+Search:
+  DefaultLimit: 10
