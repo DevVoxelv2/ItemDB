@@ -1,145 +1,253 @@
 package net.devvoxel.itemDB.managers;
 
-import net.devvoxel.itemDB.data.Database;
 import net.devvoxel.itemDB.ItemDB;
-import org.bukkit.configuration.file.YamlConfiguration;
+import net.devvoxel.itemDB.data.Database;
+import net.devvoxel.itemDB.data.ItemRecord;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 
-import java.sql.*;
-import java.util.*;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 public class ItemManager {
     private final ItemDB plugin;
     private final Database db;
-    private final String table;
-    private final Map<String, ItemStack> cache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, ItemRecord> cache = new ConcurrentHashMap<>();
+    private volatile long lastSync = 0L;
 
     public ItemManager(ItemDB plugin, Database db) {
         this.plugin = plugin;
         this.db = db;
-        this.table = plugin.getConfig().getString("Database.Table", "itemdb_items");
-        load(); // beim Start alle Items aus DB laden
-    }
-
-    /**
-     * Lädt alle Items aus der Datenbank in den Cache.
-     */
-    public void load() {
         load(true);
     }
 
-    /**
-     * Lädt alle Items aus der Datenbank in den Cache.
-     *
-     * @param logResult Soll das Ergebnis geloggt werden?
-     */
     public void load(boolean logResult) {
-        Map<String, ItemStack> updatedCache = new ConcurrentHashMap<>();
-
-        try (Statement st = db.getConnection().createStatement();
-             ResultSet rs = st.executeQuery("SELECT name,item FROM `" + table + "`")) {
-
-            while (rs.next()) {
-                String name = rs.getString("name").toLowerCase(Locale.ROOT);
-                String yaml = rs.getString("item");
-
-                try {
-                    YamlConfiguration cfg = new YamlConfiguration();
-                    cfg.loadFromString(yaml); // <- korrekt für String-Input
-                    ItemStack stack = cfg.getItemStack("item");
-                    if (stack != null) updatedCache.put(name, stack);
-                } catch (Exception parseEx) {
-                    plugin.getLogger().warning("Konnte Item '" + name + "' nicht laden: " + parseEx.getMessage());
-                }
+        try {
+            List<ItemRecord> all = db.loadAllItems();
+            cache.clear();
+            long maxTimestamp = 0;
+            for (ItemRecord record : all) {
+                cache.put(record.key(), record);
+                maxTimestamp = Math.max(maxTimestamp, record.updatedAt());
             }
-        } catch (Exception e) {
-            plugin.getLogger().severe("Fehler beim Laden der Items: " + e.getMessage());
-            return; // Bei Fehler Cache nicht überschreiben
-        }
-
-        cache.clear();
-        cache.putAll(updatedCache);
-
-        if (logResult) {
-            plugin.getLogger().info("Geladene Items aus DB: " + cache.size());
+            lastSync = maxTimestamp;
+            if (logResult) {
+                plugin.getLogger().info("Geladene Items aus DB: " + cache.size());
+            }
+        } catch (SQLException ex) {
+            plugin.getLogger().severe("Fehler beim Laden der Items: " + ex.getMessage());
         }
     }
 
-    /**
-     * Fügt ein Item hinzu (falls es noch nicht existiert).
-     */
-    public boolean add(String name, ItemStack stack) {
-        String key = name.toLowerCase(Locale.ROOT);
-        if (cache.containsKey(key)) return false;
-
+    public void sync() {
+        long since = lastSync;
         try {
-            YamlConfiguration yaml = new YamlConfiguration();
-            yaml.set("item", stack);
-            String data = yaml.saveToString(); // <- WICHTIG: statt save(Writer)
-
-            try (PreparedStatement ps = db.getConnection().prepareStatement(
-                    "INSERT INTO `" + table + "` (name,item) VALUES (?,?)")) {
-                ps.setString(1, key);
-                ps.setString(2, data);
-                ps.executeUpdate();
+            List<ItemRecord> changes = db.fetchChanges(since);
+            long maxTimestamp = since;
+            for (ItemRecord change : changes) {
+                maxTimestamp = Math.max(maxTimestamp, change.updatedAt());
+                if (change.deleted()) {
+                    cache.remove(change.key());
+                } else {
+                    cache.put(change.key(), change);
+                }
             }
+            lastSync = maxTimestamp;
+        } catch (SQLException ex) {
+            plugin.getLogger().warning("Konnte Änderungen nicht synchronisieren: " + ex.getMessage());
+        }
+    }
 
-            cache.put(key, stack.clone());
+    public boolean add(String name, ItemStack stack) {
+        String key = normalize(name);
+        if (cache.containsKey(key)) {
+            return false;
+        }
+
+        ItemRecord record = buildRecord(key, stack, db.now());
+        try {
+            db.saveItem(record);
+            cache.put(key, record);
+            lastSync = Math.max(lastSync, record.updatedAt());
             return true;
-        } catch (Exception e) {
-            plugin.getLogger().severe("Fehler beim Speichern des Items '" + name + "': " + e.getMessage());
+        } catch (SQLException ex) {
+            plugin.getLogger().severe("Fehler beim Speichern des Items '" + name + "': " + ex.getMessage());
             return false;
         }
     }
 
-    /**
-     * Entfernt ein Item aus DB + Cache.
-     */
     public boolean remove(String name) {
-        String key = name.toLowerCase(Locale.ROOT);
-        if (!cache.containsKey(key)) return false;
-
-        try (PreparedStatement ps = db.getConnection().prepareStatement(
-                "DELETE FROM `" + table + "` WHERE name=?")) {
-            ps.setString(1, key);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            plugin.getLogger().severe("Fehler beim Löschen des Items '" + name + "': " + e.getMessage());
+        String key = normalize(name);
+        if (!cache.containsKey(key)) {
+            return false;
         }
 
-        cache.remove(key);
-        return true;
+        long timestamp = db.now();
+        try {
+            if (db.markDeleted(key, timestamp)) {
+                cache.remove(key);
+                lastSync = Math.max(lastSync, timestamp);
+                return true;
+            }
+        } catch (SQLException ex) {
+            plugin.getLogger().severe("Fehler beim Löschen des Items '" + name + "': " + ex.getMessage());
+        }
+        return false;
     }
 
-    /**
-     * Holt ein Item aus dem Cache (Kopie).
-     */
     public ItemStack get(String name) {
-        ItemStack s = cache.get(name.toLowerCase(Locale.ROOT));
-        return s == null ? null : s.clone();
+        ItemRecord record = cache.get(normalize(name));
+        if (record == null) {
+            return null;
+        }
+        return record.item().clone();
     }
 
-    /**
-     * Gibt alle gespeicherten Namen zurück (alphabetisch sortiert).
-     */
+    public Optional<ItemRecord> record(String name) {
+        return Optional.ofNullable(cache.get(normalize(name)));
+    }
+
     public List<String> keys() {
-        List<String> list = new ArrayList<>(cache.keySet());
-        list.sort(String.CASE_INSENSITIVE_ORDER);
-        return list;
+        List<String> keys = new ArrayList<>(cache.keySet());
+        keys.sort(String.CASE_INSENSITIVE_ORDER);
+        return keys;
     }
 
-    /**
-     * Anzahl gespeicherter Items.
-     */
     public int size() {
         return cache.size();
     }
 
-    /**
-     * Prüft, ob ein Item existiert.
-     */
     public boolean exists(String name) {
-        return cache.containsKey(name.toLowerCase(Locale.ROOT));
+        return cache.containsKey(normalize(name));
+    }
+
+    public boolean updateItem(String name, Function<ItemStack, ItemStack> mutator) {
+        String key = normalize(name);
+        ItemRecord current = cache.get(key);
+        if (current == null) {
+            return false;
+        }
+
+        ItemStack base = current.item().clone();
+        ItemStack mutated = mutator.apply(base);
+        if (mutated == null) {
+            return false;
+        }
+
+        ItemRecord updated = buildRecord(key, mutated, db.now());
+        try {
+            db.saveItem(updated);
+            cache.put(key, updated);
+            lastSync = Math.max(lastSync, updated.updatedAt());
+            return true;
+        } catch (SQLException ex) {
+            plugin.getLogger().severe("Fehler beim Aktualisieren des Items '" + name + "': " + ex.getMessage());
+            return false;
+        }
+    }
+
+    public boolean updateMeta(String name, Consumer<ItemMeta> consumer) {
+        return updateItem(name, stack -> {
+            ItemMeta meta = stack.getItemMeta();
+            if (meta == null) {
+                meta = Bukkit.getItemFactory().getItemMeta(stack.getType());
+            }
+            if (meta == null) {
+                return null;
+            }
+            consumer.accept(meta);
+            stack.setItemMeta(meta);
+            return stack;
+        });
+    }
+
+    public List<ItemRecord> search(String query, Integer customModelData, int limit) {
+        try {
+            return db.search(query, customModelData, limit);
+        } catch (SQLException ex) {
+            plugin.getLogger().warning("Fehler bei der Suche: " + ex.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    public org.bukkit.scheduler.BukkitTask applySyncTask(long intervalTicks) {
+        return Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::sync, intervalTicks, intervalTicks);
+    }
+
+    public static String normalize(String name) {
+        return name.toLowerCase(Locale.ROOT);
+    }
+
+    private ItemRecord buildRecord(String key, ItemStack stack, long timestamp) {
+        ItemStack clone = stack.clone();
+        ItemMeta meta = clone.getItemMeta();
+        String displayName = meta != null && meta.hasDisplayName() ? meta.getDisplayName() : null;
+        List<String> lore = meta != null && meta.hasLore() ? meta.getLore() : List.of();
+        Integer customModelData = meta != null && meta.hasCustomModelData() ? meta.getCustomModelData() : null;
+        Map<String, Integer> enchantments = meta != null && !meta.getEnchants().isEmpty()
+                ? meta.getEnchants().entrySet().stream()
+                .collect(java.util.stream.Collectors.toMap(e -> {
+                    var key = e.getKey().getKey();
+                    return key.getNamespace() + ":" + key.getKey();
+                }, Map.Entry::getValue))
+                : Map.of();
+
+        return new ItemRecord(key, clone, displayName, lore, customModelData, enchantments, timestamp, false);
+    }
+
+    public boolean setCustomModelData(String name, Integer value) {
+        return updateMeta(name, meta -> {
+            if (value == null) {
+                meta.setCustomModelData(null);
+            } else {
+                meta.setCustomModelData(value);
+            }
+        });
+    }
+
+    public boolean setDisplayName(String name, String displayName) {
+        return updateMeta(name, meta -> meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', displayName)));
+    }
+
+    public boolean clearDisplayName(String name) {
+        return updateMeta(name, meta -> meta.setDisplayName(null));
+    }
+
+    public boolean addLoreLine(String name, String line) {
+        return updateMeta(name, meta -> {
+            List<String> lore = meta.hasLore() ? new ArrayList<>(meta.getLore()) : new ArrayList<>();
+            lore.add(ChatColor.translateAlternateColorCodes('&', line));
+            meta.setLore(lore);
+        });
+    }
+
+    public boolean setLoreLine(String name, int index, String line) {
+        return updateMeta(name, meta -> {
+            List<String> lore = meta.hasLore() ? new ArrayList<>(meta.getLore()) : new ArrayList<>();
+            while (lore.size() <= index) {
+                lore.add("");
+            }
+            lore.set(index, ChatColor.translateAlternateColorCodes('&', line));
+            meta.setLore(lore);
+        });
+    }
+
+    public boolean clearLore(String name) {
+        return updateMeta(name, meta -> meta.setLore(null));
+    }
+
+    public Optional<ItemRecord> info(String name) {
+        return record(name);
     }
 }
