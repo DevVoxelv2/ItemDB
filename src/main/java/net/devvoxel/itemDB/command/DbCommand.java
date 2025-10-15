@@ -139,8 +139,7 @@ public class DbCommand implements CommandExecutor, TabCompleter {
             String action = args[2].toLowerCase(Locale.ROOT);
 
             switch (action) {
-                case "display":
-                case "displayname" -> {
+                case "display", "displayname" -> {
                     if (args.length == 3) {
                         if (plugin.items().clearDisplayName(name)) {
                             sender.sendMessage(msg.get("item-display-cleared").replace("{name}", name));
@@ -232,11 +231,14 @@ public class DbCommand implements CommandExecutor, TabCompleter {
                         }
                         return true;
                     }
+                    sender.sendMessage(msg.get("usage-edit-custommodel"));
+                    return true;
+                }
+                default -> {
+                    sender.sendMessage(msg.get("usage-edit"));
+                    return true;
                 }
             }
-
-            sender.sendMessage(msg.get("usage-edit"));
-            return true;
         }
 
         // /db add <name>

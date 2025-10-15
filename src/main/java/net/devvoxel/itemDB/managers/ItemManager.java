@@ -198,8 +198,8 @@ public class ItemManager {
         Map<String, Integer> enchantments = meta != null && !meta.getEnchants().isEmpty()
                 ? meta.getEnchants().entrySet().stream()
                 .collect(java.util.stream.Collectors.toMap(e -> {
-                    var key = e.getKey().getKey();
-                    return key.getNamespace() + ":" + key.getKey();
+                    var namespacedKey = e.getKey().getKey();
+                    return namespacedKey.getNamespace() + ":" + namespacedKey.getKey();
                 }, Map.Entry::getValue))
                 : Map.of();
 
