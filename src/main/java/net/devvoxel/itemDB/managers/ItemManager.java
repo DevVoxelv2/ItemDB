@@ -7,12 +7,13 @@ import org.bukkit.inventory.ItemStack;
 
 import java.sql.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ItemManager {
     private final ItemDB plugin;
     private final Database db;
     private final String table;
-    private final Map<String, ItemStack> cache = new HashMap<>();
+    private final Map<String, ItemStack> cache = new ConcurrentHashMap<>();
 
     public ItemManager(ItemDB plugin, Database db) {
         this.plugin = plugin;
@@ -25,7 +26,17 @@ public class ItemManager {
      * Lädt alle Items aus der Datenbank in den Cache.
      */
     public void load() {
-        cache.clear();
+        load(true);
+    }
+
+    /**
+     * Lädt alle Items aus der Datenbank in den Cache.
+     *
+     * @param logResult Soll das Ergebnis geloggt werden?
+     */
+    public void load(boolean logResult) {
+        Map<String, ItemStack> updatedCache = new ConcurrentHashMap<>();
+
         try (Statement st = db.getConnection().createStatement();
              ResultSet rs = st.executeQuery("SELECT name,item FROM `" + table + "`")) {
 
@@ -37,15 +48,22 @@ public class ItemManager {
                     YamlConfiguration cfg = new YamlConfiguration();
                     cfg.loadFromString(yaml); // <- korrekt für String-Input
                     ItemStack stack = cfg.getItemStack("item");
-                    if (stack != null) cache.put(name, stack);
+                    if (stack != null) updatedCache.put(name, stack);
                 } catch (Exception parseEx) {
                     plugin.getLogger().warning("Konnte Item '" + name + "' nicht laden: " + parseEx.getMessage());
                 }
             }
         } catch (Exception e) {
             plugin.getLogger().severe("Fehler beim Laden der Items: " + e.getMessage());
+            return; // Bei Fehler Cache nicht überschreiben
         }
-        plugin.getLogger().info("Geladene Items aus DB: " + cache.size());
+
+        cache.clear();
+        cache.putAll(updatedCache);
+
+        if (logResult) {
+            plugin.getLogger().info("Geladene Items aus DB: " + cache.size());
+        }
     }
 
     /**

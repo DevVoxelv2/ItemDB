@@ -10,6 +10,7 @@ import org.bstats.charts.SingleLineChart;
 import org.bstats.charts.SimplePie;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 public class ItemDB extends JavaPlugin {
 
@@ -19,6 +20,7 @@ public class ItemDB extends JavaPlugin {
     private ItemManager itemManager;
     private MessageManager messageManager;
     private ItemsGui itemsGui;
+    private BukkitTask reloadTask;
 
     public static ItemDB get() {
         return instance;
@@ -60,6 +62,13 @@ public class ItemDB extends JavaPlugin {
                     getConfig().getString("Database.Type", "mysql").toLowerCase())
             );
 
+            this.reloadTask = Bukkit.getScheduler().runTaskTimerAsynchronously(
+                    this,
+                    () -> itemManager.load(false),
+                    20L,
+                    20L
+            );
+
             getLogger().info("ItemDB erfolgreich aktiviert.");
             getLogger().info("Geladene Items aus Datenbank: " + itemManager.size());
         } catch (Exception e) {
@@ -70,6 +79,10 @@ public class ItemDB extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (reloadTask != null) {
+            reloadTask.cancel();
+            reloadTask = null;
+        }
         if (database != null) {
             database.close();
         }
