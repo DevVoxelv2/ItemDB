@@ -91,8 +91,45 @@ public class Database {
                 ");";
         connection.createStatement().executeUpdate(sql);
 
+        ensureColumnExists(connection, "updated_at", type == DatabaseType.MYSQL ? "BIGINT NOT NULL DEFAULT 0" : "INTEGER NOT NULL DEFAULT 0");
+        ensureColumnExists(connection, "is_deleted", "BOOLEAN NOT NULL DEFAULT FALSE");
+
         String indexSql = "CREATE INDEX IF NOT EXISTS `idx_" + table + "_updated` ON `" + table + "` (`updated_at`);";
         connection.createStatement().executeUpdate(indexSql);
+    }
+
+    private void ensureColumnExists(Connection connection, String column, String definition) throws SQLException {
+        if (columnExists(connection, column)) {
+            return;
+        }
+
+        String sql = "ALTER TABLE `" + table + "` ADD COLUMN `" + column + "` " + definition + ";";
+        connection.createStatement().executeUpdate(sql);
+
+        if ("updated_at".equals(column)) {
+            long now = Instant.now().toEpochMilli();
+            String updateSql = "UPDATE `" + table + "` SET `updated_at` = ? WHERE `updated_at` = 0 OR `updated_at` IS NULL";
+            try (PreparedStatement ps = connection.prepareStatement(updateSql)) {
+                ps.setLong(1, now);
+                ps.executeUpdate();
+            }
+        }
+    }
+
+    private boolean columnExists(Connection connection, String column) throws SQLException {
+        if (hasColumn(connection, table, column)) {
+            return true;
+        }
+        if (hasColumn(connection, table.toUpperCase(Locale.ROOT), column)) {
+            return true;
+        }
+        return hasColumn(connection, table.toLowerCase(Locale.ROOT), column);
+    }
+
+    private boolean hasColumn(Connection connection, String tableName, String column) throws SQLException {
+        try (ResultSet rs = connection.getMetaData().getColumns(connection.getCatalog(), null, tableName, column)) {
+            return rs.next();
+        }
     }
 
     public Connection getConnection() throws SQLException {
